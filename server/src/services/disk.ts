@@ -644,8 +644,51 @@ export const diskService = {
     await this.loadCacheFromFile();
   },
 
-  async deletePath(path: string): Promise<void> {
-    await unlink(path);
+  async deletePath(targetPath: string): Promise<{ success: boolean, message: string }> {
+    try {
+      console.log(`Attempting to delete path: ${targetPath}`);
+      
+      // Check if path exists
+      const stats = await fs.stat(targetPath);
+      
+      if (stats.isDirectory()) {
+        // For directories, use recursive deletion
+        console.log(`Deleting directory: ${targetPath}`);
+        await fs.rm(targetPath, { recursive: true, force: true });
+      } else {
+        // For files, use unlink
+        console.log(`Deleting file: ${targetPath}`);
+        await fs.unlink(targetPath);
+      }
+      
+      // Remove from cache if exists
+      if (diskCache.largeDirectories[targetPath]) {
+        delete diskCache.largeDirectories[targetPath];
+        this.saveCacheToFile();
+      }
+      
+      return {
+        success: true,
+        message: `Successfully deleted ${stats.isDirectory() ? 'directory' : 'file'}: ${targetPath}`
+      };
+    } catch (error) {
+      console.error(`Error deleting path: ${error}`);
+      
+      // Get more specific error messages for common issues
+      let errorMessage = 'Failed to delete path';
+      if (error.code === 'EACCES' || error.code === 'EPERM') {
+        errorMessage = 'Permission denied. Try running with administrator privileges or check file permissions.';
+      } else if (error.code === 'EBUSY') {
+        errorMessage = 'File or directory is in use by another process. Close any applications using this path and try again.';
+      } else if (error.code === 'ENOENT') {
+        errorMessage = 'File or directory not found.';
+      }
+      
+      return {
+        success: false,
+        message: errorMessage
+      };
+    }
   },
 
   // Add a method to calculate directory size with limited depth

@@ -63,15 +63,29 @@ class DiskAPI {
         params: { forceRefresh }
       });
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Error analyzing path (${targetPath}):`, error);
       throw error;
     }
   }
   
-  async deletePath(targetPath: string): Promise<any> {
-    const response = await axios.delete(`${API_BASE_URL}/delete/${encodePath(targetPath)}`);
-    return response.data;
+  async deletePath(targetPath: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/delete/${encodePath(targetPath)}`);
+      return response.data;
+    } catch (error: any) {
+      console.error(`Error deleting path (${targetPath}):`, error);
+      
+      // Extract error message from response if available
+      if (error.response && error.response.data) {
+        return error.response.data;
+      }
+      
+      return {
+        success: false,
+        message: error.message || 'Failed to delete item'
+      };
+    }
   }
   
   async getSettings(): Promise<Settings> {

@@ -68,10 +68,19 @@ export async function deletePath(req: Request, res: Response) {
     const formattedPath = decodeURIComponent(targetPath);
     
     const result = await diskService.deletePath(formattedPath);
-    res.json(result);
+    
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(400).json(result);
+    }
   } catch (error) {
     console.error('Error deleting path:', error);
-    res.status(500).json({ error: 'Failed to delete path' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to delete path',
+      error: error.message
+    });
   }
 }
 

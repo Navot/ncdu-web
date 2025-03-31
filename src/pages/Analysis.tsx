@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { Container, Title, Paper, Group, Text, ActionIcon, Stack, Breadcrumbs, Anchor, Loader, Button, Progress } from '@mantine/core';
-import { IconArrowUp, IconTrash, IconRefresh, IconArrowLeft } from '@tabler/icons-react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { Container, Title, Paper, Group, Text, Loader, Button } from '@mantine/core';
+import { IconTrash, IconRefresh, IconArrowLeft } from '@tabler/icons-react';
 import * as d3 from 'd3';
 import { useParams, useNavigate } from 'react-router-dom';
 import { diskAPI, FileNode } from '../api/disk';
@@ -130,23 +130,7 @@ export default function Analysis() {
   
   const actualPath = normalizePath(pathParam);
   
-  useEffect(() => {
-    loadData(false);
-    
-    // Setup WebSocket connection for real-time updates
-    const ws = diskAPI.connectWebSocket();
-    diskAPI.onWSMessage('pathUpdated', (data) => {
-      if (data.path === actualPath) {
-        loadData(false);
-      }
-    });
-    
-    return () => {
-      ws.close();
-    };
-  }, [actualPath]);
-  
-  const loadData = async (forceRefresh: boolean) => {
+  const loadData = useCallback(async (forceRefresh: boolean) => {
     setIsLoading(true);
     setError(null);
     
@@ -161,7 +145,23 @@ export default function Analysis() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [actualPath]);
+  
+  useEffect(() => {
+    loadData(false);
+    
+    // Setup WebSocket connection for real-time updates
+    const ws = diskAPI.connectWebSocket();
+    diskAPI.onWSMessage('pathUpdated', (data) => {
+      if (data.path === actualPath) {
+        loadData(false);
+      }
+    });
+    
+    return () => {
+      ws.close();
+    };
+  }, [actualPath, loadData]);
   
   const handleRefresh = () => {
     loadData(true);
@@ -170,12 +170,21 @@ export default function Analysis() {
   const handleDelete = async (itemPath: string) => {
     if (window.confirm(`Are you sure you want to delete ${itemPath}?`)) {
       try {
-        await diskAPI.deletePath(itemPath);
-        // Refresh data after deletion
-        loadData(true);
+        setIsLoading(true);
+        const result = await diskAPI.deletePath(itemPath);
+        
+        if (result.success) {
+          // Refresh data after successful deletion
+          loadData(true);
+        } else {
+          // Show error message from server
+          setError(result.message || 'Failed to delete item. Check permissions and try again.');
+          setIsLoading(false);
+        }
       } catch (err) {
         console.error('Error deleting item:', err);
         setError('Failed to delete item. Check permissions and try again.');
+        setIsLoading(false);
       }
     }
   };

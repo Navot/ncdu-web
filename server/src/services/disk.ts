@@ -39,6 +39,24 @@ const defaultSettings: Settings = {
   darkMode: false,
 };
 
+// Paths that should be skipped during analysis
+const SYSTEM_PATHS = [
+  'System Volume Information',
+  'pagefile.sys',
+  'swapfile.sys',
+  'hiberfil.sys',
+  'DumpStack.log',
+  '$Recycle.Bin',
+  '$WINDOWS.~BT',
+  '$Windows.~WS',
+  'Windows.old',
+  'DumpStack.log.tmp'
+];
+
+function shouldSkipPath(itemPath: string): boolean {
+  return SYSTEM_PATHS.some(systemPath => itemPath.includes(systemPath));
+}
+
 export const diskAPI = {
   async getMounts(): Promise<MountPoint[]> {
     // For Windows, we'll return the C: drive as an example
@@ -151,79 +169,79 @@ export const diskService = {
   },
 
   async analyzePath(targetPath: string): Promise<FileNode> {
-    const fullPath = path.resolve(targetPath);
+    // Make sure we're working with absolute path for root drives
+    // This ensures we analyze C:\ or D:\ not the working directory
+    const rootPath = targetPath.endsWith(':') 
+      ? `${targetPath}\\` 
+      : path.resolve(targetPath);
     
-    // Add a function to check if a path should be skipped
-    function shouldSkipPath(path: string): boolean {
-      const SYSTEM_PATHS = [
-        'System Volume Information',
-        'pagefile.sys',
-        'swapfile.sys',
-        'hiberfil.sys',
-        'DumpStack.log',
-        '$Recycle.Bin',
-        '$WINDOWS.~BT',
-        '$Windows.~WS',
-        'Windows.old',
-        'DumpStack.log.tmp'
-      ];
-      
-      return SYSTEM_PATHS.some(systemPath => path.includes(systemPath));
-    }
+    const name = path.basename(rootPath) || rootPath;
 
     async function analyzeItem(itemPath: string): Promise<FileNode> {
       try {
-        const name = path.basename(itemPath);
-        
         // Skip Windows system files and directories
         if (shouldSkipPath(itemPath)) {
           return {
-            name,
+            name: path.basename(itemPath) || itemPath,
             size: 0,
             type: 'file'
           };
         }
-        
+
         const stats = await fs.stat(itemPath);
+        const itemName = path.basename(itemPath) || itemPath;
 
         if (stats.isFile()) {
           return {
-            name,
+            name: itemName,
             size: stats.size,
             type: 'file'
           };
         }
 
         if (stats.isDirectory()) {
-          const children: FileNode[] = [];
-          const items = await fs.readdir(itemPath);
-
-          for (const item of items) {
-            try {
-              const childPath = path.join(itemPath, item);
-              const child = await analyzeItem(childPath);
-              children.push(child);
-            } catch (error) {
-              console.error(`Error analyzing ${item}:`, error);
+          let children: FileNode[] = [];
+          try {
+            const items = await fs.readdir(itemPath);
+            
+            for (const item of items) {
+              try {
+                const childPath = path.join(itemPath, item);
+                const child = await analyzeItem(childPath);
+                children.push(child);
+              } catch (error) {
+                console.error(`Error analyzing ${item}:`, error);
+              }
             }
+          } catch (error) {
+            console.error(`Error reading directory ${itemPath}:`, error);
           }
 
           return {
-            name,
+            name: itemName,
             size: children.reduce((acc, child) => acc + child.size, 0),
             type: 'directory',
             children: children.sort((a, b) => b.size - a.size)
           };
         }
 
-        throw new Error(`Unsupported file type for ${itemPath}`);
+        return {
+          name: itemName,
+          size: 0,
+          type: 'file'
+        };
       } catch (error) {
         console.error(`Error analyzing ${itemPath}:`, error);
-        throw error;
+        // Return empty node for errors
+        return {
+          name: path.basename(itemPath) || itemPath,
+          size: 0,
+          type: 'file'
+        };
       }
     }
 
-    return analyzeItem(fullPath);
+    return analyzeItem(rootPath);
   },
 
   async deletePath(path: string): Promise<void> {

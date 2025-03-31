@@ -11,23 +11,55 @@ let settings = {
   darkMode: false,
 };
 
+// Initialize cache when the server starts
+diskService.initializeCache().catch(error => {
+  console.error('Failed to initialize disk cache:', error);
+});
+
 export const diskController = {
-  getMounts: async (req: Request, res: Response) => {
+  async getMountPoints(req: Request, res: Response): Promise<void> {
     try {
-      const mounts = await diskService.getMountPoints();
-      res.json(mounts);
+      const forceRefresh = req.query.forceRefresh === 'true';
+      const result = await diskService.getMountPoints(forceRefresh);
+      res.json(result);
     } catch (error) {
+      console.error('Error getting mount points:', error);
       res.status(500).json({ error: 'Failed to get mount points' });
     }
   },
 
-  analyzePath: async (req: Request, res: Response) => {
+  async analyzePath(req: Request, res: Response): Promise<void> {
     try {
       const { path } = req.params;
-      const analysis = await diskService.analyzePath(path, settings.showHiddenFiles);
-      res.json(analysis);
+      const forceRefresh = req.query.forceRefresh === 'true';
+      
+      if (!path) {
+        res.status(400).json({ error: 'Path is required' });
+        return;
+      }
+
+      const result = await diskService.analyzePath(path, forceRefresh);
+      res.json(result);
     } catch (error) {
+      console.error('Error analyzing path:', error);
       res.status(500).json({ error: 'Failed to analyze path' });
+    }
+  },
+
+  async deletePath(req: Request, res: Response): Promise<void> {
+    try {
+      const { path } = req.params;
+      
+      if (!path) {
+        res.status(400).json({ error: 'Path is required' });
+        return;
+      }
+
+      await diskService.deletePath(path);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting path:', error);
+      res.status(500).json({ error: 'Failed to delete path' });
     }
   },
 

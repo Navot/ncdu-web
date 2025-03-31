@@ -4,6 +4,7 @@ import { WebSocketServer } from 'ws';
 import http from 'http';
 import { setupWebSocketHandlers } from './controllers/websocket';
 import { diskController } from './controllers/disk';
+import { initWebSocketServer } from './controllers/websocket';
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -13,10 +14,11 @@ app.use(cors());
 app.use(express.json());
 
 // REST endpoints
-app.get('/api/mounts', diskController.getMounts);
+app.get('/api/mounts', diskController.getMountPoints);
 app.get('/api/analyze/:path', diskController.analyzePath);
-app.post('/api/settings', diskController.updateSettings);
+app.delete('/api/delete/:path', diskController.deletePath);
 app.get('/api/settings', diskController.getSettings);
+app.post('/api/settings', diskController.updateSettings);
 
 // Create HTTP server
 const server = http.createServer(app);

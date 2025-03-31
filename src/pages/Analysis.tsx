@@ -117,14 +117,14 @@ export default function Analysis() {
 
   useEffect(() => {
     async function loadData() {
+      setLoading(true);
       try {
-        setLoading(true);
-        const analysis = await diskAPI.analyzePath(currentPath);
-        setData(analysis);
+        const { result, lastUpdated } = await diskAPI.analyzePath(currentPath);
+        setData(result);
         setError(null);
       } catch (err) {
         setError('Failed to analyze path');
-        console.error('Error analyzing path:', err);
+        console.error(err);
       } finally {
         setLoading(false);
       }

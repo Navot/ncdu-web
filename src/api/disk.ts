@@ -23,18 +23,38 @@ export interface Settings {
   darkMode: boolean;
 }
 
+interface MountPointsResponse {
+  mountPoints: MountPoint[];
+  lastUpdated: number;
+}
+
+interface FileNodeResponse {
+  result: FileNode;
+  lastUpdated: number;
+}
+
 class DiskAPI {
   private ws: WebSocket | null = null;
   private messageHandlers: Map<string, (data: any) => void> = new Map();
 
-  async getMounts(): Promise<MountPoint[]> {
-    const response = await fetch(`${API_URL}/mounts`);
-    return response.json();
+  async getMounts(forceRefresh = false): Promise<MountPointsResponse> {
+    const response = await fetch(`${API_URL}/mounts?forceRefresh=${forceRefresh}`);
+    if (!response.ok) {
+      throw new Error('Failed to get mount points');
+    }
+    
+    return await response.json();
   }
 
-  async analyzePath(path: string): Promise<FileNode> {
-    const response = await fetch(`${API_URL}/analyze/${encodeURIComponent(path)}`);
-    return response.json();
+  async analyzePath(path: string, forceRefresh = false): Promise<FileNodeResponse> {
+    const encodedPath = encodeURIComponent(path);
+    const response = await fetch(`${API_URL}/analyze/${encodedPath}?forceRefresh=${forceRefresh}`);
+    
+    if (!response.ok) {
+      throw new Error(`Failed to analyze path: ${path}`);
+    }
+    
+    return await response.json();
   }
 
   async getSettings(): Promise<Settings> {

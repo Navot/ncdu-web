@@ -1,11 +1,11 @@
 const API_URL = 'http://localhost:3001/api';
 
 export interface MountPoint {
+  name: string;
   path: string;
   total: number;
   used: number;
-  name: string;
-  alert: boolean;
+  available: number;
 }
 
 export interface FileNode {

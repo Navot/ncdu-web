@@ -1,136 +1,204 @@
-import { Container, Title, Grid, Paper, Text, Group, RingProgress, Stack, Loader } from '@mantine/core';
+import { Container, Title, Grid, Paper, Text, Group, RingProgress, Stack, Loader, Progress } from '@mantine/core';
 import { IconDeviceFloppy, IconFolder, IconAlertTriangle } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
 import { diskAPI, MountPoint } from '../api/disk';
 
 function formatBytes(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let value = bytes;
-  let unitIndex = 0;
-
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex++;
-  }
-
-  return `${value.toFixed(1)} ${units[unitIndex]}`;
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
-function UsageCard({ mountPoint }: { mountPoint: MountPoint }) {
-  const usagePercentage = (mountPoint.used / mountPoint.total) * 100;
-  const color = usagePercentage > 80 ? 'red' : usagePercentage > 60 ? 'yellow' : 'blue';
+function calculateUsagePercentage(used: number, total: number): number {
+  if (total === 0) return 0;
+  return Math.round((used / total) * 100);
+}
+
+function UsageCard({ mountPoint, isAnalyzing }: { mountPoint: MountPoint, isAnalyzing?: boolean }) {
+  const usagePercentage = calculateUsagePercentage(mountPoint.used, mountPoint.total);
+  const isWarning = usagePercentage > 85;
 
   return (
-    <Paper p="md" radius="md" withBorder>
+    <Paper p="md" radius="md" withBorder style={isAnalyzing ? { borderColor: 'blue', borderWidth: 2 } : undefined}>
       <Group position="apart" mb="xs">
         <Group>
-          <IconDeviceFloppy size={24} />
+          <IconDeviceFloppy size={24} color={isAnalyzing ? 'blue' : undefined} />
           <div>
-            <Text weight={500}>{mountPoint.name}</Text>
+            <Text weight={500}>{mountPoint.name} {isAnalyzing && <Text span color="blue" size="xs">(Analyzing...)</Text>}</Text>
             <Text size="xs" color="dimmed">{mountPoint.path}</Text>
           </div>
         </Group>
-        {mountPoint.alert && (
-          <IconAlertTriangle size={20} color="orange" />
-        )}
       </Group>
 
-      <Group position="apart" mt="md">
+      <Group position="apart" align="flex-end" spacing="xs">
+        <Stack spacing={0}>
+          <Text size="sm">Used: {formatBytes(mountPoint.used)}</Text>
+          <Text size="sm">Total: {formatBytes(mountPoint.total)}</Text>
+          <Text size="sm">Free: {formatBytes(mountPoint.available)}</Text>
+        </Stack>
         <RingProgress
           size={80}
           roundCaps
           thickness={8}
-          sections={[{ value: usagePercentage, color }]}
+          sections={[
+            { value: usagePercentage, color: isWarning ? 'red' : 'blue' }
+          ]}
           label={
-            <Text size="xs" align="center">
-              {Math.round(usagePercentage)}%
+            <Text color="blue" weight={700} align="center" size="xs">
+              {usagePercentage}%
             </Text>
           }
         />
-        <Stack spacing={0}>
-          <Text size="sm">
-            Used: {formatBytes(mountPoint.used)}
-          </Text>
-          <Text size="sm">
-            Total: {formatBytes(mountPoint.total)}
-          </Text>
-          <Text size="sm">
-            Free: {formatBytes(mountPoint.total - mountPoint.used)}
-          </Text>
-        </Stack>
       </Group>
     </Paper>
   );
 }
 
+interface LargestDirectory {
+  path: string;
+  size: number;
+  analyzed: boolean;
+}
+
 export default function Dashboard() {
   const [mountPoints, setMountPoints] = useState<MountPoint[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [mountsLoading, setMountsLoading] = useState(true);
+  const [mountsError, setMountsError] = useState<string | null>(null);
+  const [largestDirs, setLargestDirs] = useState<LargestDirectory[]>([]);
+  const [analyzedDrives, setAnalyzedDrives] = useState<Set<string>>(new Set());
+  const [currentlyAnalyzing, setCurrentlyAnalyzing] = useState<string | null>(null);
 
+  // Load mount points
   useEffect(() => {
-    async function loadMountPoints() {
+    async function loadMounts() {
       try {
+        setMountsLoading(true);
         const mounts = await diskAPI.getMounts();
         setMountPoints(mounts);
-        setError(null);
+        setMountsError(null);
       } catch (err) {
-        setError('Failed to load mount points');
-        console.error('Error loading mount points:', err);
+        setMountsError('Failed to load disk information');
+        console.error(err);
       } finally {
-        setLoading(false);
+        setMountsLoading(false);
       }
     }
 
-    loadMountPoints();
-
-    // Set up WebSocket connection for real-time updates
-    diskAPI.connectWebSocket((data) => {
-      if (data.type === 'mountsUpdate') {
-        setMountPoints(data.mounts);
-      }
-    });
+    loadMounts();
   }, []);
 
-  if (loading) {
-    return (
-      <Container size="xl">
-        <Group position="center" style={{ minHeight: '200px' }}>
-          <Loader size="lg" />
-        </Group>
-      </Container>
-    );
-  }
+  // Analyze directories progressively
+  useEffect(() => {
+    async function analyzeDrive(mount: MountPoint) {
+      if (analyzedDrives.has(mount.path)) return;
+      
+      setCurrentlyAnalyzing(mount.path);
+      try {
+        const result = await diskAPI.analyzePath(mount.path);
+        if (result.children) {
+          const dirs = result.children
+            .filter(child => child.type === 'directory')
+            .map(dir => ({
+              path: `${mount.path}\\${dir.name}`,
+              size: dir.size,
+              analyzed: true
+            }))
+            .sort((a, b) => b.size - a.size)
+            .slice(0, 5);
+          
+          setLargestDirs(prev => [...prev, ...dirs]);
+        }
+        setAnalyzedDrives(prev => new Set([...prev, mount.path]));
+      } catch (err) {
+        console.error(`Error analyzing ${mount.path}:`, err);
+        // Add empty result to prevent retrying failed drives
+        setAnalyzedDrives(prev => new Set([...prev, mount.path]));
+      } finally {
+        setCurrentlyAnalyzing(null);
+      }
+    }
 
-  if (error) {
-    return (
-      <Container size="xl">
-        <Paper p="md" radius="md" withBorder>
-          <Text color="red" align="center">{error}</Text>
-        </Paper>
-      </Container>
-    );
-  }
+    // Analyze one drive at a time
+    const unanalyzedMount = mountPoints.find(mount => !analyzedDrives.has(mount.path));
+    if (unanalyzedMount && !currentlyAnalyzing) {
+      analyzeDrive(unanalyzedMount);
+    }
+  }, [mountPoints, analyzedDrives, currentlyAnalyzing]);
 
   return (
     <Container size="xl">
       <Title order={2} mb="md">Storage Overview</Title>
       
-      <Grid>
-        {mountPoints.map((mountPoint) => (
-          <Grid.Col key={mountPoint.path} xs={12} sm={6} lg={4}>
-            <UsageCard mountPoint={mountPoint} />
-          </Grid.Col>
-        ))}
-      </Grid>
+      {mountsLoading ? (
+        <Paper p="xl" radius="md" withBorder>
+          <Group position="center">
+            <Loader size="md" />
+            <Text>Loading storage information...</Text>
+          </Group>
+        </Paper>
+      ) : mountsError ? (
+        <Paper p="md" radius="md" withBorder>
+          <Group>
+            <IconAlertTriangle color="red" size={24} />
+            <Text color="red">{mountsError}</Text>
+          </Group>
+        </Paper>
+      ) : (
+        <Grid>
+          {mountPoints.map((mountPoint) => (
+            <Grid.Col key={mountPoint.path} xs={12} sm={6} lg={4}>
+              <UsageCard 
+                mountPoint={mountPoint} 
+                isAnalyzing={currentlyAnalyzing === mountPoint.path}
+              />
+            </Grid.Col>
+          ))}
+        </Grid>
+      )}
 
       <Title order={2} mt="xl" mb="md">Recent Activity</Title>
       <Paper p="md" radius="md" withBorder>
         <Group>
           <IconFolder size={24} />
-          <div>
+          <div style={{ flex: 1 }}>
             <Text>Largest directories</Text>
-            <Text size="sm" color="dimmed">Loading...</Text>
+            {mountPoints.length > 0 && (
+              <div>
+                <Group position="apart" mb="xs">
+                  <Text size="sm" color="dimmed">
+                    {analyzedDrives.size === 0 
+                      ? "Starting analysis..." 
+                      : `Analyzed ${analyzedDrives.size} of ${mountPoints.length} drives`}
+                  </Text>
+                  <Text size="sm" color="dimmed">
+                    {currentlyAnalyzing && `Scanning ${currentlyAnalyzing}`}
+                  </Text>
+                </Group>
+                <Progress 
+                  value={(analyzedDrives.size / mountPoints.length) * 100} 
+                  animate={!!currentlyAnalyzing}
+                  mb="md"
+                />
+              </div>
+            )}
+            {largestDirs.length > 0 ? (
+              <Stack spacing="xs">
+                {largestDirs
+                  .sort((a, b) => b.size - a.size)
+                  .slice(0, 5)
+                  .map((dir) => (
+                    <Group key={dir.path} position="apart">
+                      <Text size="sm">{dir.path}</Text>
+                      <Text size="sm" color="dimmed">{formatBytes(dir.size)}</Text>
+                    </Group>
+                  ))
+                }
+              </Stack>
+            ) : analyzedDrives.size === mountPoints.length ? (
+              <Text size="sm" color="dimmed">No directories found</Text>
+            ) : null}
           </div>
         </Group>
       </Paper>

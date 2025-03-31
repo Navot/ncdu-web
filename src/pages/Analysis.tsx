@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Container, Title, Paper, Group, Text, ActionIcon, Stack, Breadcrumbs, Anchor, Loader } from '@mantine/core';
-import { IconArrowUp, IconTrash, IconRefresh } from '@tabler/icons-react';
+import { Container, Title, Paper, Group, Text, ActionIcon, Stack, Breadcrumbs, Anchor, Loader, Button, Progress } from '@mantine/core';
+import { IconArrowUp, IconTrash, IconRefresh, IconArrowLeft } from '@tabler/icons-react';
 import * as d3 from 'd3';
 import { useParams, useNavigate } from 'react-router-dom';
 import { diskAPI, FileNode } from '../api/disk';
@@ -92,128 +92,235 @@ function Treemap({ data }: { data: FileNode }) {
   );
 }
 
-function formatBytes(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let value = bytes;
-  let unitIndex = 0;
+function formatBytes(bytes: number, decimals = 1): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+  const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
 
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex++;
+// Function to ensure a path is properly formed
+function normalizePath(pathParam: string): string {
+  // Handle 'root' as a special case
+  if (pathParam === 'root') {
+    return 'C:';
   }
-
-  return `${value.toFixed(1)} ${units[unitIndex]}`;
+  
+  // If it's a Windows directory without drive letter, assume it's on C:
+  if (!pathParam.includes(':') && !pathParam.startsWith('/')) {
+    // Check if we're navigating directly to a top-level Windows directory
+    const topLevelDirs = ['Windows', 'Program Files', 'Program Files (x86)', 'Users', 'ProgramData'];
+    if (topLevelDirs.includes(pathParam)) {
+      return `C:\\${pathParam}`;
+    }
+  }
+  
+  return pathParam;
 }
 
 export default function Analysis() {
-  const { path } = useParams();
+  const { path: pathParam = 'root' } = useParams();
   const navigate = useNavigate();
   const [data, setData] = useState<FileNode | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const breadcrumbs = path ? path.split('/') : [];
-
-  const currentPath = path || 'C:';
-
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  
+  const actualPath = normalizePath(pathParam);
+  
   useEffect(() => {
-    async function loadData() {
-      setLoading(true);
-      try {
-        const { result, lastUpdated } = await diskAPI.analyzePath(currentPath);
-        setData(result);
-        setError(null);
-      } catch (err) {
-        setError('Failed to analyze path');
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadData();
-
-    // Set up WebSocket connection for real-time updates
-    diskAPI.connectWebSocket((wsData) => {
-      if (wsData.type === 'analysis' && wsData.data.name === currentPath) {
-        setData(wsData.data);
+    loadData(false);
+    
+    // Setup WebSocket connection for real-time updates
+    const ws = diskAPI.connectWebSocket();
+    diskAPI.onWSMessage('pathUpdated', (data) => {
+      if (data.path === actualPath) {
+        loadData(false);
       }
     });
-  }, [currentPath]);
-
-  const handleRefresh = () => {
-    diskAPI.sendWSMessage('refresh', { path: currentPath });
-  };
-
-  const handleDelete = () => {
-    if (window.confirm(`Are you sure you want to delete ${currentPath}?`)) {
-      diskAPI.sendWSMessage('delete', { path: currentPath });
+    
+    return () => {
+      ws.close();
+    };
+  }, [actualPath]);
+  
+  const loadData = async (forceRefresh: boolean) => {
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      console.log(`Analyzing path: ${actualPath}`);
+      const response = await diskAPI.analyzePath(actualPath, forceRefresh);
+      setData(response.result);
+      setLastUpdated(new Date(response.lastUpdated));
+    } catch (err) {
+      console.error('Error loading disk data:', err);
+      setError('Failed to load disk data. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
   };
-
-  if (loading) {
+  
+  const handleRefresh = () => {
+    loadData(true);
+  };
+  
+  const handleDelete = async (itemPath: string) => {
+    if (window.confirm(`Are you sure you want to delete ${itemPath}?`)) {
+      try {
+        await diskAPI.deletePath(itemPath);
+        // Refresh data after deletion
+        loadData(true);
+      } catch (err) {
+        console.error('Error deleting item:', err);
+        setError('Failed to delete item. Check permissions and try again.');
+      }
+    }
+  };
+  
+  const navigateToPath = (node: FileNode) => {
+    if (node.type === 'directory') {
+      let newPath;
+      if (actualPath === 'root') {
+        newPath = node.name;
+      } else if (actualPath.endsWith(':')) {
+        newPath = `${actualPath}\\${node.name}`;
+      } else {
+        newPath = `${actualPath}\\${node.name}`;
+      }
+      // Replace backslashes with forward slashes for URLs
+      navigate(`/analysis/${encodeURIComponent(newPath.replace(/\\/g, '/'))}`);
+    }
+  };
+  
+  const navigateUp = () => {
+    if (actualPath === 'root') return;
+    
+    if (actualPath.endsWith(':\\')) {
+      navigate('/analysis/root');
+      return;
+    }
+    
+    const parentPath = actualPath.split('\\').slice(0, -1).join('\\');
+    if (parentPath.endsWith(':')) {
+      navigate(`/analysis/${parentPath}`);
+    } else {
+      navigate(`/analysis/${encodeURIComponent(parentPath.replace(/\\/g, '/'))}`);
+    }
+  };
+  
+  const renderTreemap = () => {
+    if (!data || !data.children || data.children.length === 0) {
+      return <Text>No data to display</Text>;
+    }
+    
+    // D3 code to render treemap would go here
+    // For now, we'll just render a list of items
     return (
-      <Container size="xl">
-        <Group position="center" style={{ minHeight: '200px' }}>
-          <Loader size="lg" />
-        </Group>
-      </Container>
+      <div>
+        {data.children.map((node, index) => (
+          <Paper key={index} p="md" mb="sm" withBorder>
+            <Group position="apart">
+              <div>
+                <Text 
+                  weight={600} 
+                  style={{ cursor: node.type === 'directory' ? 'pointer' : 'default' }}
+                  onClick={() => node.type === 'directory' && navigateToPath(node)}
+                >
+                  {node.name}
+                </Text>
+                <Text size="sm">{formatBytes(node.size)}</Text>
+              </div>
+              <Group>
+                {node.type === 'directory' && (
+                  <Button size="xs" leftIcon={<IconRefresh size={14} />} onClick={() => navigateToPath(node)}>
+                    Explore
+                  </Button>
+                )}
+                <Button 
+                  size="xs" 
+                  color="red" 
+                  leftIcon={<IconTrash size={14} />}
+                  onClick={() => handleDelete(`${actualPath}\\${node.name}`)}
+                >
+                  Delete
+                </Button>
+              </Group>
+            </Group>
+          </Paper>
+        ))}
+      </div>
     );
-  }
-
-  if (error || !data) {
-    return (
-      <Container size="xl">
-        <Paper p="md" radius="md" withBorder>
-          <Text color="red" align="center">{error || 'No data available'}</Text>
-        </Paper>
-      </Container>
-    );
-  }
-
+  };
+  
   return (
-    <Container size="xl">
-      <Group position="apart" mb="md">
-        <Stack spacing="xs">
-          <Title order={2}>Disk Analysis</Title>
-          <Breadcrumbs>
-            <Anchor onClick={() => navigate('/analysis')}>root</Anchor>
-            {breadcrumbs.map((crumb, index) => (
-              <Anchor
-                key={index}
-                onClick={() => navigate(`/analysis/${breadcrumbs.slice(0, index + 1).join('/')}`)}
-              >
-                {crumb}
-              </Anchor>
-            ))}
-          </Breadcrumbs>
-        </Stack>
+    <Container>
+      <Group mb="md" position="apart">
         <Group>
-          <ActionIcon variant="light" size="lg" onClick={handleRefresh}>
-            <IconRefresh size={20} />
-          </ActionIcon>
-          <ActionIcon variant="light" size="lg" color="red" onClick={handleDelete}>
-            <IconTrash size={20} />
-          </ActionIcon>
-          <ActionIcon
-            variant="light"
-            size="lg"
-            onClick={() => navigate('/analysis')}
+          <Button 
+            variant="outline" 
+            leftIcon={<IconArrowLeft size={16} />}
+            onClick={navigateUp}
+            disabled={actualPath === 'root'}
           >
-            <IconArrowUp size={20} />
-          </ActionIcon>
+            Back
+          </Button>
+          <Title order={2}>Disk Analysis</Title>
         </Group>
+        <Button 
+          leftIcon={<IconRefresh size={16} />} 
+          onClick={handleRefresh}
+          loading={isLoading}
+        >
+          Refresh
+        </Button>
       </Group>
-
-      <Paper p="md" radius="md" withBorder>
-        <Treemap data={data} />
+      
+      <Paper p="md" mb="md" withBorder>
+        <Group position="apart">
+          <div>
+            <Text size="sm">Current path:</Text>
+            <Text weight={700}>{actualPath}</Text>
+          </div>
+          {lastUpdated && (
+            <Text size="sm" color="dimmed">
+              Last updated: {lastUpdated.toLocaleString()}
+            </Text>
+          )}
+        </Group>
       </Paper>
-
-      <Paper mt="md" p="md" radius="md" withBorder>
-        <Title order={3} mb="sm">Details</Title>
-        <Text size="sm" color="dimmed">
-          Total Size: {formatBytes(data.size)}
-        </Text>
-      </Paper>
+      
+      {isLoading ? (
+        <Paper p="xl" withBorder>
+          <Group position="center">
+            <Loader />
+            <Text>Analyzing disk usage...</Text>
+          </Group>
+        </Paper>
+      ) : error ? (
+        <Paper p="md" withBorder>
+          <Text color="red">{error}</Text>
+        </Paper>
+      ) : (
+        <>
+          <Paper p="md" mb="md" withBorder>
+            <Group position="apart">
+              <div>
+                <Text size="sm">Total size:</Text>
+                <Text weight={700}>{data ? formatBytes(data.size) : '0 B'}</Text>
+              </div>
+              <div>
+                <Text size="sm">Items:</Text>
+                <Text weight={700}>{data?.children?.length || 0}</Text>
+              </div>
+            </Group>
+          </Paper>
+          
+          {renderTreemap()}
+        </>
+      )}
     </Container>
   );
 } 

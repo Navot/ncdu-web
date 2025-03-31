@@ -265,7 +265,7 @@ export const diskAPI = {
 };
 
 export const diskService = {
-  async getMountPoints(forceRefresh = false): Promise<{ mountPoints: MountPoint[], lastUpdated: number }> {
+  async getMounts(forceRefresh = false): Promise<{ mountPoints: MountPoint[], lastUpdated: number }> {
     // Return cached data if available and not forcing refresh
     if (!forceRefresh && diskCache.mountPoints.length > 0) {
       return { 
@@ -360,6 +360,11 @@ export const diskService = {
         lastUpdated: diskCache.lastUpdated
       };
     }
+  },
+  
+  // Add a backwards compatibility alias
+  async getMountPoints(forceRefresh = false): Promise<{ mountPoints: MountPoint[], lastUpdated: number }> {
+    return this.getMounts(forceRefresh);
   },
 
   async analyzePath(targetPath: string, forceRefresh = false): Promise<{ result: FileNode, lastUpdated: number }> {
@@ -531,7 +536,11 @@ export const diskService = {
     
     // For non-drive paths, use a different approach
     try {
-      const fullPath = path.resolve(targetPath);
+      // Make sure we're using absolute paths when the path is not a drive letter
+      // This fixes issues with paths like "Windows" that need to be fully qualified
+      const fullPath = targetPath.includes(':') ? targetPath : path.resolve(targetPath);
+      
+      console.log(`Analyzing non-drive path: ${fullPath}`);
       const stats = await fs.stat(fullPath);
       
       if (stats.isFile()) {

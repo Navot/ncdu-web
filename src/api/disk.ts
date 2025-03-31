@@ -1,4 +1,7 @@
-const API_URL = 'http://localhost:3001/api';
+import axios from 'axios';
+
+const API_BASE_URL = 'http://localhost:3001/api';
+const WS_URL = 'ws://localhost:3001';
 
 export interface MountPoint {
   name: string;
@@ -18,90 +21,113 @@ export interface FileNode {
 export interface Settings {
   autoRefresh: boolean;
   refreshInterval: number;
-  excludePaths: string;
+  excludePaths: string[];
   showHiddenFiles: boolean;
   darkMode: boolean;
 }
 
-interface MountPointsResponse {
-  mountPoints: MountPoint[];
-  lastUpdated: number;
-}
-
-interface FileNodeResponse {
+export interface FileNodeResponse {
   result: FileNode;
   lastUpdated: number;
 }
 
+// Helper function to properly encode paths for API calls
+function encodePath(path: string): string {
+  // Replace backslashes with forward slashes for URL compatibility
+  const normalizedPath = path.replace(/\\/g, '/');
+  
+  // Handle special case for drive letters (e.g., C:)
+  if (normalizedPath.length === 2 && normalizedPath.endsWith(':')) {
+    return normalizedPath[0];
+  }
+  
+  // For paths like C:\Windows, encode properly
+  return encodeURIComponent(normalizedPath);
+}
+
 class DiskAPI {
   private ws: WebSocket | null = null;
-  private messageHandlers: Map<string, (data: any) => void> = new Map();
-
-  async getMounts(forceRefresh = false): Promise<MountPointsResponse> {
-    const response = await fetch(`${API_URL}/mounts?forceRefresh=${forceRefresh}`);
-    if (!response.ok) {
-      throw new Error('Failed to get mount points');
-    }
-    
-    return await response.json();
-  }
-
-  async analyzePath(path: string, forceRefresh = false): Promise<FileNodeResponse> {
-    const encodedPath = encodeURIComponent(path);
-    const response = await fetch(`${API_URL}/analyze/${encodedPath}?forceRefresh=${forceRefresh}`);
-    
-    if (!response.ok) {
-      throw new Error(`Failed to analyze path: ${path}`);
-    }
-    
-    return await response.json();
-  }
-
-  async getSettings(): Promise<Settings> {
-    const response = await fetch(`${API_URL}/settings`);
-    return response.json();
-  }
-
-  async updateSettings(settings: Partial<Settings>): Promise<Settings> {
-    const response = await fetch(`${API_URL}/settings`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(settings),
+  private messageHandlers: Record<string, ((data: any) => void)[]> = {};
+  
+  async getMounts(forceRefresh = false): Promise<{ mountPoints: MountPoint[], lastUpdated: number }> {
+    const response = await axios.get(`${API_BASE_URL}/mounts`, {
+      params: { forceRefresh }
     });
-    return response.json();
+    return response.data;
   }
-
-  connectWebSocket(onMessage: (data: any) => void) {
-    if (this.ws) return;
-
-    this.ws = new WebSocket('ws://localhost:3001');
-
+  
+  async analyzePath(targetPath: string, forceRefresh = false): Promise<FileNodeResponse> {
+    try {
+      console.log(`API call for path: ${targetPath}, encoded: ${encodePath(targetPath)}`);
+      const response = await axios.get(`${API_BASE_URL}/analyze/${encodePath(targetPath)}`, {
+        params: { forceRefresh }
+      });
+      return response.data;
+    } catch (error) {
+      console.error(`Error analyzing path (${targetPath}):`, error);
+      throw error;
+    }
+  }
+  
+  async deletePath(targetPath: string): Promise<any> {
+    const response = await axios.delete(`${API_BASE_URL}/delete/${encodePath(targetPath)}`);
+    return response.data;
+  }
+  
+  async getSettings(): Promise<Settings> {
+    const response = await axios.get(`${API_BASE_URL}/settings`);
+    return response.data;
+  }
+  
+  async updateSettings(settings: Settings): Promise<void> {
+    await axios.post(`${API_BASE_URL}/settings`, settings);
+  }
+  
+  // WebSocket methods
+  connectWebSocket(): WebSocket {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return this.ws;
+    }
+    
+    this.ws = new WebSocket(WS_URL);
+    
+    this.ws.onopen = () => {
+      console.log('WebSocket connected');
+    };
+    
     this.ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      onMessage(data);
-      
-      const handler = this.messageHandlers.get(data.type);
-      if (handler) {
-        handler(data);
+      try {
+        const message = JSON.parse(event.data);
+        const { type, data } = message;
+        
+        if (this.messageHandlers[type]) {
+          this.messageHandlers[type].forEach(handler => handler(data));
+        }
+      } catch (error) {
+        console.error('Error processing WebSocket message:', error);
       }
     };
-
+    
     this.ws.onclose = () => {
-      this.ws = null;
-      // Attempt to reconnect after 5 seconds
-      setTimeout(() => this.connectWebSocket(onMessage), 5000);
+      console.log('WebSocket disconnected. Reconnecting in 5 seconds...');
+      setTimeout(() => this.connectWebSocket(), 5000);
     };
+    
+    return this.ws;
   }
-
-  onWSMessage(type: string, handler: (data: any) => void) {
-    this.messageHandlers.set(type, handler);
+  
+  onWSMessage(type: string, callback: (data: any) => void): void {
+    if (!this.messageHandlers[type]) {
+      this.messageHandlers[type] = [];
+    }
+    this.messageHandlers[type].push(callback);
   }
-
-  sendWSMessage(type: string, data: any = {}) {
+  
+  sendWSMessage(type: string, data: any): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type, ...data }));
+      this.ws.send(JSON.stringify({ type, data }));
+    } else {
+      console.error('WebSocket not connected');
     }
   }
 }

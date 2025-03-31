@@ -1,143 +1,192 @@
-import { Container, Title, Paper, Switch, Stack, Text, TextInput, NumberInput, Button, Group, Loader } from '@mantine/core';
+import { Container, Title, Paper, Switch, Stack, Text, TextInput, NumberInput, Button, Group, Loader, Alert } from '@mantine/core';
 import { useEffect, useState } from 'react';
-import { diskAPI, Settings as SettingsType } from '../api/disk';
+import { diskAPI, Settings } from '../api/disk';
 
-const defaultSettings: SettingsType = {
+const defaultSettings: Settings = {
   autoRefresh: true,
   refreshInterval: 5,
-  excludePaths: '/tmp,/proc,/sys',
+  excludePaths: ['/tmp', '/proc', '/sys'],
   showHiddenFiles: false,
   darkMode: false,
 };
 
-export default function Settings() {
-  const [settings, setSettings] = useState<SettingsType>(defaultSettings);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+export default function SettingsPage() {
+  const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [isLoading, setIsLoading] = useState(true);
+  const [saveLoading, setSaveLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     async function loadSettings() {
+      setIsLoading(true);
+      setError(null);
+      
       try {
-        const savedSettings = await diskAPI.getSettings();
-        setSettings(savedSettings);
-        setError(null);
+        const data = await diskAPI.getSettings();
+        setSettings(data);
       } catch (err) {
-        setError('Failed to load settings');
         console.error('Error loading settings:', err);
+        setError('Failed to load settings. Using defaults.');
+        setSettings(defaultSettings);
       } finally {
-        setLoading(false);
+        setIsLoading(false);
       }
     }
-
+    
     loadSettings();
   }, []);
-
+  
   const handleSave = async () => {
+    setSaveLoading(true);
+    setSaveError(null);
+    setSaved(false);
+    
     try {
-      setSaving(true);
       await diskAPI.updateSettings(settings);
-      setError(null);
+      setSaved(true);
     } catch (err) {
-      setError('Failed to save settings');
       console.error('Error saving settings:', err);
+      setSaveError('Failed to save settings.');
     } finally {
-      setSaving(false);
+      setSaveLoading(false);
     }
   };
-
-  if (loading) {
+  
+  const handleExcludePathsChange = (value: string) => {
+    // Convert comma-separated string to array
+    const paths = value.split(',').map(path => path.trim()).filter(Boolean);
+    setSettings({
+      ...settings,
+      excludePaths: paths
+    });
+  };
+  
+  if (isLoading) {
     return (
-      <Container size="xl">
+      <Container size="sm">
         <Group position="center" style={{ minHeight: '200px' }}>
           <Loader size="lg" />
         </Group>
       </Container>
     );
   }
-
-  return (
-    <Container size="xl">
-      <Title order={2} mb="md">Settings</Title>
-
-      {error && (
-        <Paper p="md" radius="md" withBorder mb="md">
-          <Text color="red">{error}</Text>
+  
+  if (error) {
+    return (
+      <Container size="sm">
+        <Paper p="md" withBorder>
+          <Alert color="red" title="Error" mb="md">
+            {error}
+          </Alert>
+          <SettingsForm 
+            settings={settings}
+            setSettings={setSettings}
+            handleSave={handleSave}
+            saveLoading={saveLoading}
+            saveError={saveError}
+            saved={saved}
+            handleExcludePathsChange={handleExcludePathsChange}
+          />
         </Paper>
-      )}
-
-      <Paper p="md" radius="md" withBorder>
-        <Stack spacing="md">
-          <Title order={3}>Display</Title>
-          
-          <Switch
-            label="Show Hidden Files"
-            checked={settings.showHiddenFiles}
-            onChange={(event) => setSettings({
-              ...settings,
-              showHiddenFiles: event.currentTarget.checked
-            })}
-          />
-
-          <Switch
-            label="Dark Mode"
-            checked={settings.darkMode}
-            onChange={(event) => setSettings({
-              ...settings,
-              darkMode: event.currentTarget.checked
-            })}
-          />
-
-          <Title order={3} mt="md">Scanning</Title>
-
-          <Switch
-            label="Auto Refresh"
-            checked={settings.autoRefresh}
-            onChange={(event) => setSettings({
-              ...settings,
-              autoRefresh: event.currentTarget.checked
-            })}
-          />
-
-          <NumberInput
-            label="Refresh Interval (minutes)"
-            value={settings.refreshInterval}
-            min={1}
-            max={60}
-            disabled={!settings.autoRefresh}
-            onChange={(value) => setSettings({
-              ...settings,
-              refreshInterval: value || 5
-            })}
-          />
-
-          <TextInput
-            label="Exclude Paths"
-            description="Comma-separated list of paths to exclude from scanning"
-            value={settings.excludePaths}
-            onChange={(event) => setSettings({
-              ...settings,
-              excludePaths: event.currentTarget.value
-            })}
-          />
-
-          <Group position="right" mt="xl">
-            <Button onClick={handleSave} loading={saving}>
-              Save Settings
-            </Button>
-          </Group>
-        </Stack>
-      </Paper>
-
-      <Paper mt="md" p="md" radius="md" withBorder>
-        <Title order={3} mb="md">About</Title>
-        <Text>
-          ncdu Web v1.0.0
-        </Text>
-        <Text size="sm" color="dimmed" mt="xs">
-          A modern web-based disk usage analyzer inspired by ncdu
-        </Text>
+      </Container>
+    );
+  }
+  
+  return (
+    <Container size="sm">
+      <Title order={1} mb="md">Settings</Title>
+      <Paper p="md" withBorder>
+        <SettingsForm 
+          settings={settings}
+          setSettings={setSettings}
+          handleSave={handleSave}
+          saveLoading={saveLoading}
+          saveError={saveError}
+          saved={saved}
+          handleExcludePathsChange={handleExcludePathsChange}
+        />
       </Paper>
     </Container>
+  );
+}
+
+interface SettingsFormProps {
+  settings: Settings;
+  setSettings: React.Dispatch<React.SetStateAction<Settings>>;
+  handleSave: () => Promise<void>;
+  saveLoading: boolean;
+  saveError: string | null;
+  saved: boolean;
+  handleExcludePathsChange: (value: string) => void;
+}
+
+function SettingsForm({ 
+  settings, 
+  setSettings, 
+  handleSave, 
+  saveLoading, 
+  saveError, 
+  saved,
+  handleExcludePathsChange
+}: SettingsFormProps) {
+  return (
+    <Stack spacing="md">
+      <Switch
+        label="Auto-refresh"
+        checked={settings.autoRefresh}
+        onChange={(event) => setSettings({
+          ...settings,
+          autoRefresh: event.currentTarget.checked
+        })}
+      />
+      
+      <NumberInput
+        label="Refresh interval (minutes)"
+        value={settings.refreshInterval}
+        min={1}
+        max={60}
+        disabled={!settings.autoRefresh}
+        onChange={(value) => setSettings({
+          ...settings,
+          refreshInterval: value || 5
+        })}
+      />
+      
+      <TextInput
+        label="Exclude paths (comma-separated)"
+        placeholder="/tmp,/proc,/sys"
+        value={settings.excludePaths.join(',')}
+        onChange={(event) => handleExcludePathsChange(event.currentTarget.value)}
+      />
+      
+      <Switch
+        label="Show hidden files"
+        checked={settings.showHiddenFiles}
+        onChange={(event) => setSettings({
+          ...settings,
+          showHiddenFiles: event.currentTarget.checked
+        })}
+      />
+      
+      <Switch
+        label="Dark mode"
+        checked={settings.darkMode}
+        onChange={(event) => setSettings({
+          ...settings,
+          darkMode: event.currentTarget.checked
+        })}
+      />
+      
+      <Group position="apart">
+        <Button onClick={handleSave} loading={saveLoading}>
+          Save Settings
+        </Button>
+        
+        {saved && <Alert color="green" sx={{ display: 'inline-block' }}>Settings saved!</Alert>}
+        {saveError && <Alert color="red" sx={{ display: 'inline-block' }}>{saveError}</Alert>}
+      </Group>
+    </Stack>
   );
 } 

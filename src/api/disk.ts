@@ -2,6 +2,8 @@ import axios from 'axios';
 
 const API_BASE_URL = 'http://localhost:3001/api';
 const WS_URL = 'ws://localhost:3001';
+const isWindows = navigator.platform.toLowerCase().includes('win');
+const pathSeparator = isWindows ? '\\' : '/';
 
 export interface MountPoint {
   name: string;
@@ -33,16 +35,60 @@ export interface FileNodeResponse {
 
 // Helper function to properly encode paths for API calls
 function encodePath(path: string): string {
+  // Handle "root" special case
+  if (path === 'root') {
+    return 'root';
+  }
+  
   // Replace backslashes with forward slashes for URL compatibility
   const normalizedPath = path.replace(/\\/g, '/');
   
   // Handle special case for drive letters (e.g., C:)
-  if (normalizedPath.length === 2 && normalizedPath.endsWith(':')) {
+  if (isWindows && normalizedPath.length === 2 && normalizedPath.endsWith(':')) {
     return normalizedPath[0];
   }
   
   // For paths like C:\Windows, encode properly
   return encodeURIComponent(normalizedPath);
+}
+
+// Helper function to handle platform-specific path normalization
+export function normalizePath(path: string, targetPath?: string): string {
+  if (path === 'root') {
+    return isWindows ? 'C:' : '/';
+  }
+  
+  if (isWindows) {
+    // Handle Windows paths
+    if (!path.includes(':') && !path.includes('/')) {
+      // Top-level Windows directories without drive letter
+      const topLevelDirs = ['Windows', 'Program Files', 'Program Files (x86)', 'Users', 'ProgramData'];
+      if (topLevelDirs.includes(path)) {
+        return `C:\\${path}`;
+      }
+    }
+    
+    // Ensure proper path joining with backslashes
+    if (targetPath) {
+      if (targetPath.endsWith(':')) {
+        return `${targetPath}\\${path}`;
+      } else {
+        return `${targetPath}\\${path}`;
+      }
+    }
+    
+    return path;
+  } else {
+    // Handle Unix paths
+    if (targetPath && path) {
+      if (targetPath === '/') {
+        return `/${path}`;
+      } else {
+        return `${targetPath}/${path}`;
+      }
+    }
+    return path;
+  }
 }
 
 class DiskAPI {

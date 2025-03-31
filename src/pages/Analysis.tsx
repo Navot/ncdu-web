@@ -3,7 +3,11 @@ import { Container, Title, Paper, Group, Text, Loader, Button } from '@mantine/c
 import { IconTrash, IconRefresh, IconArrowLeft } from '@tabler/icons-react';
 import * as d3 from 'd3';
 import { useParams, useNavigate } from 'react-router-dom';
-import { diskAPI, FileNode } from '../api/disk';
+import { diskAPI, FileNode, normalizePath as apiNormalizePath } from '../api/disk';
+
+// Detect platform for path handling
+const isWindows = navigator.platform.toLowerCase().includes('win');
+const pathSeparator = isWindows ? '\\' : '/';
 
 function Treemap({ data }: { data: FileNode }) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -101,23 +105,9 @@ function formatBytes(bytes: number, decimals = 1): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
-// Function to ensure a path is properly formed
+// Function to ensure a path is properly formed based on platform
 function normalizePath(pathParam: string): string {
-  // Handle 'root' as a special case
-  if (pathParam === 'root') {
-    return 'C:';
-  }
-  
-  // If it's a Windows directory without drive letter, assume it's on C:
-  if (!pathParam.includes(':') && !pathParam.startsWith('/')) {
-    // Check if we're navigating directly to a top-level Windows directory
-    const topLevelDirs = ['Windows', 'Program Files', 'Program Files (x86)', 'Users', 'ProgramData'];
-    if (topLevelDirs.includes(pathParam)) {
-      return `C:\\${pathParam}`;
-    }
-  }
-  
-  return pathParam;
+  return apiNormalizePath(pathParam);
 }
 
 export default function Analysis() {
@@ -192,31 +182,80 @@ export default function Analysis() {
   const navigateToPath = (node: FileNode) => {
     if (node.type === 'directory') {
       let newPath;
-      if (actualPath === 'root') {
-        newPath = node.name;
-      } else if (actualPath.endsWith(':')) {
-        newPath = `${actualPath}\\${node.name}`;
+      
+      if (isWindows) {
+        // Windows path handling
+        if (actualPath === 'root') {
+          newPath = node.name;
+        } else if (actualPath.endsWith(':')) {
+          newPath = `${actualPath}\\${node.name}`;
+        } else {
+          newPath = `${actualPath}\\${node.name}`;
+        }
+        // Replace backslashes with forward slashes for URLs
+        newPath = encodeURIComponent(newPath.replace(/\\/g, '/'));
       } else {
-        newPath = `${actualPath}\\${node.name}`;
+        // Unix path handling
+        if (actualPath === 'root') {
+          newPath = encodeURIComponent(node.name);
+        } else if (actualPath === '/') {
+          newPath = encodeURIComponent(`/${node.name}`);
+        } else {
+          newPath = encodeURIComponent(`${actualPath}/${node.name}`);
+        }
       }
-      // Replace backslashes with forward slashes for URLs
-      navigate(`/analysis/${encodeURIComponent(newPath.replace(/\\/g, '/'))}`);
+      
+      navigate(`/analysis/${newPath}`);
     }
   };
   
   const navigateUp = () => {
     if (actualPath === 'root') return;
     
-    if (actualPath.endsWith(':\\')) {
-      navigate('/analysis/root');
-      return;
-    }
+    let parentPath;
     
-    const parentPath = actualPath.split('\\').slice(0, -1).join('\\');
-    if (parentPath.endsWith(':')) {
-      navigate(`/analysis/${parentPath}`);
+    if (isWindows) {
+      // Windows path handling
+      if (actualPath.endsWith(':\\')) {
+        navigate('/analysis/root');
+        return;
+      }
+      
+      parentPath = actualPath.split('\\').slice(0, -1).join('\\');
+      if (parentPath.endsWith(':')) {
+        navigate(`/analysis/${parentPath}`);
+      } else {
+        navigate(`/analysis/${encodeURIComponent(parentPath.replace(/\\/g, '/'))}`);
+      }
     } else {
-      navigate(`/analysis/${encodeURIComponent(parentPath.replace(/\\/g, '/'))}`);
+      // Unix path handling
+      if (actualPath === '/') {
+        navigate('/analysis/root');
+        return;
+      }
+      
+      parentPath = actualPath.split('/').slice(0, -1).join('/');
+      if (parentPath === '') {
+        navigate(`/analysis/root`);
+      } else {
+        navigate(`/analysis/${encodeURIComponent(parentPath)}`);
+      }
+    }
+  };
+  
+  const getItemPath = (itemName: string): string => {
+    if (isWindows) {
+      if (actualPath.endsWith(':')) {
+        return `${actualPath}\\${itemName}`;
+      } else {
+        return `${actualPath}\\${itemName}`;
+      }
+    } else {
+      if (actualPath === '/') {
+        return `/${itemName}`;
+      } else {
+        return `${actualPath}/${itemName}`;
+      }
     }
   };
   
@@ -225,8 +264,6 @@ export default function Analysis() {
       return <Text>No data to display</Text>;
     }
     
-    // D3 code to render treemap would go here
-    // For now, we'll just render a list of items
     return (
       <div>
         {data.children.map((node, index) => (
@@ -252,7 +289,7 @@ export default function Analysis() {
                   size="xs" 
                   color="red" 
                   leftIcon={<IconTrash size={14} />}
-                  onClick={() => handleDelete(`${actualPath}\\${node.name}`)}
+                  onClick={() => handleDelete(getItemPath(node.name))}
                 >
                   Delete
                 </Button>

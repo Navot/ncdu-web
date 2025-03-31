@@ -5,6 +5,15 @@ import { join } from 'path';
 import os from 'os';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { 
+  platform, 
+  execAsync, 
+  getDrivesCommand, 
+  parseDrivesOutput, 
+  getSystemDirs, 
+  isSystemPath,
+  normalizePath 
+} from '../utils/platform';
 
 const execAsync = promisify(exec);
 
@@ -275,39 +284,11 @@ export const diskService = {
     }
 
     try {
-      // Get drive information using wmic - make sure we include all drives
-      const { stdout } = await execAsync('wmic logicaldisk get caption,size,freespace,volumename /format:csv');
+      // Get drive information based on platform
+      const { stdout } = await execAsync(getDrivesCommand());
       
-      // Parse CSV output (skip first empty line)
-      const lines = stdout.trim().split('\n').slice(1);
-      const mounts: MountPoint[] = [];
-      
-      for (const line of lines) {
-        const parts = line.trim().split(',');
-        if (parts.length < 3) continue;
-        
-        const caption = parts[1];  // Drive letter
-        const freeSpace = parts[2]; // Free space
-        const size = parts[3];     // Total size
-        const volumeName = parts.length > 4 ? parts[4] : ''; // Volume name (if available)
-        
-        if (!caption || !size) continue;
-        
-        const total = parseInt(size) || 0;
-        const available = parseInt(freeSpace) || 0;
-        const used = total - available;
-        
-        if (total > 0) {
-          const name = volumeName ? `${volumeName} (${caption})` : caption;
-          mounts.push({
-            name: name,
-            path: caption,
-            total,
-            used,
-            available
-          });
-        }
-      }
+      // Parse output based on platform
+      const mounts = parseDrivesOutput(stdout).filter(mount => mount !== null && mount.total > 0);
       
       console.log(`Found ${mounts.length} drives:`, mounts.map(m => m.path).join(', '));
       
@@ -325,30 +306,42 @@ export const diskService = {
     } catch (error) {
       console.error('Failed to get mount points:', error);
       
-      // As a fallback, create entries for C: and D: drives
+      // As a fallback, create entries for root drives based on platform
       if (diskCache.mountPoints.length === 0) {
-        const fallbackMounts: MountPoint[] = [
-          {
+        const fallbackMounts: MountPoint[] = [];
+        
+        if (platform.isWindows) {
+          // Windows fallback
+          fallbackMounts.push({
             name: 'C:',
             path: 'C:',
             total: 250000000000, // 250GB example
             used: 150000000000,  // 150GB example
             available: 100000000000, // 100GB example
-          }
-        ];
-        
-        // Check if D: is accessible
-        try {
-          await fs.stat('D:\\');
-          fallbackMounts.push({
-            name: 'D:',
-            path: 'D:',
-            total: 250000000000, // 250GB example
-            used: 150000000000,  // 150GB example
-            available: 100000000000, // 100GB example
           });
-        } catch (e) {
-          // D: doesn't exist or isn't accessible
+          
+          // Check if D: is accessible
+          try {
+            await fs.stat('D:\\');
+            fallbackMounts.push({
+              name: 'D:',
+              path: 'D:',
+              total: 250000000000, // 250GB example
+              used: 150000000000,  // 150GB example
+              available: 100000000000, // 100GB example
+            });
+          } catch (e) {
+            // D: doesn't exist or isn't accessible
+          }
+        } else {
+          // macOS/Linux fallback
+          fallbackMounts.push({
+            name: 'Macintosh HD',
+            path: '/',
+            total: 500000000000, // 500GB example 
+            used: 250000000000,  // 250GB example
+            available: 250000000000, // 250GB example
+          });
         }
         
         diskCache.mountPoints = fallbackMounts;
@@ -368,6 +361,9 @@ export const diskService = {
   },
 
   async analyzePath(targetPath: string, forceRefresh = false): Promise<{ result: FileNode, lastUpdated: number }> {
+    // Normalize path for the current platform
+    targetPath = normalizePath(targetPath);
+    
     // Return cached large directories if available and not forcing refresh
     if (!forceRefresh && diskCache.largeDirectories[targetPath]) {
       // Convert the cached large directories to a FileNode structure
@@ -389,9 +385,9 @@ export const diskService = {
     }
     
     // Handle special case for root drives
-    if (targetPath.endsWith(':')) {
-      const driveLetter = targetPath;
-      const rootPath = `${driveLetter}\\`;
+    if ((platform.isWindows && targetPath.endsWith(':')) || 
+        (!platform.isWindows && targetPath === '/')) {
+      const rootPath = platform.isWindows ? `${targetPath}${platform.pathSeparator}` : targetPath;
       
       try {
         console.log(`Analyzing root directory: ${rootPath}`);
@@ -406,13 +402,8 @@ export const diskService = {
         for (const item of rootItems) {
           const itemPath = path.join(rootPath, item);
           
-          // Skip locked system files but not all system files
-          if (itemPath.includes('$Recycle.Bin') || 
-              itemPath.includes('System Volume Information') ||
-              item === 'pagefile.sys' ||
-              item === 'hiberfil.sys' ||
-              item === 'swapfile.sys' ||
-              item === 'DumpStack.log.tmp') {
+          // Skip system files and directories that would cause errors
+          if (isSystemPath(itemPath)) {
             continue;
           }
           
@@ -454,15 +445,31 @@ export const diskService = {
         
         console.log(`Final result: ${sortedChildren.length} items with content`);
         
-        // If no content found, try looking in hidden folders like Users
+        // If no content found, try looking in hidden folders
         if (sortedChildren.length === 0) {
           // Try looking in some specific paths that might exist even when hidden
-          const fallbackPaths = [
-            `${rootPath}Users`,
-            `${rootPath}Documents and Settings`,
-            `${rootPath}Program Files`,
-            `${rootPath}Program Files (x86)`
-          ];
+          let fallbackPaths: string[] = [];
+          
+          if (platform.isWindows) {
+            fallbackPaths = [
+              `${rootPath}Users`,
+              `${rootPath}Documents and Settings`,
+              `${rootPath}Program Files`,
+              `${rootPath}Program Files (x86)`
+            ];
+          } else if (platform.isMac) {
+            fallbackPaths = [
+              `/Users`,
+              `/Applications`,
+              `/opt`
+            ];
+          } else {
+            fallbackPaths = [
+              `/home`,
+              `/usr`,
+              `/var`
+            ];
+          }
           
           for (const fbPath of fallbackPaths) {
             try {
@@ -493,11 +500,14 @@ export const diskService = {
           });
         }
         
+        // Create path separator appropriate for platform
+        const sep = platform.pathSeparator;
+        
         // Save to cache
         diskCache.largeDirectories[targetPath] = sortedChildren
           .filter(node => node.type === 'directory')
           .map(node => ({
-            path: `${targetPath}\\${node.name}`,
+            path: `${targetPath}${sep}${node.name}`,
             size: node.size,
             name: node.name
           }));
@@ -537,8 +547,7 @@ export const diskService = {
     // For non-drive paths, use a different approach
     try {
       // Make sure we're using absolute paths when the path is not a drive letter
-      // This fixes issues with paths like "Windows" that need to be fully qualified
-      const fullPath = targetPath.includes(':') ? targetPath : path.resolve(targetPath);
+      const fullPath = targetPath;
       
       console.log(`Analyzing non-drive path: ${fullPath}`);
       const stats = await fs.stat(fullPath);
@@ -751,12 +760,8 @@ async function calculateDirectorySize(dirPath: string, maxDepth = 1): Promise<nu
     
     // Process each item in the directory
     for (const item of items) {
-      // Skip obvious system files that are likely to cause permission issues
-      if (item.startsWith('$') || 
-          item === 'hiberfil.sys' || 
-          item === 'pagefile.sys' || 
-          item === 'swapfile.sys' ||
-          item === 'DumpStack.log.tmp') {
+      // Skip system files that are likely to cause permission issues
+      if (isSystemPath(path.join(dirPath, item))) {
         continue;
       }
       
@@ -769,10 +774,8 @@ async function calculateDirectorySize(dirPath: string, maxDepth = 1): Promise<nu
           totalSize += stats.size;
         } else if (stats.isDirectory() && maxDepth > 0) {
           // For system directories with known permission issues, just estimate
-          if (item === 'Windows' || 
-              item === 'Program Files' || 
-              item === 'Program Files (x86)' ||
-              item === 'ProgramData') {
+          const systemDirs = getSystemDirs();
+          if (systemDirs.some(dir => item.includes(dir))) {
             // Add a reasonable estimate for system folders instead of scanning
             totalSize += 1024 * 1024 * 1024; // 1 GB estimate
             continue;
